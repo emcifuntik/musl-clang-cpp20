@@ -1,35 +1,20 @@
-# musl + clang-20 Docker image (Ubuntu 24.04)
+## musl + clang-20 Docker image (Alpine 3.22)
 
-This image builds a musl-based C/C++ toolchain with Clang 20 and statically builds libc++/libc++abi/libunwind (plus compiler-rt builtins) targeting musl. The container entrypoint compiles, runs, and verifies a small C++20 program using `std::format`, and also checks the binary is statically linked.
+Alpine-based image that uses system musl and Clang 20. It builds and installs LLVM libc++ stack (libunwind, libc++abi, libc++) into `/usr` and makes libc++ the default for clang via `/etc/clang/clang.cfg`. The entrypoint compiles, runs, and verifies a small C++20 program using `std::format`, then checks the binary is fully static.
 
-## What it includes
-- Ubuntu 24.04 base
-- clang-20, lld-20
-- musl 1.2.5 installed to `/opt/musl`
-- libc++/libc++abi/libunwind/`compiler-rt` (LLVM 20.1.x) for musl, static, installed into the musl sysroot
+### What it includes
+- Alpine 3.22 base (system musl)
+- clang 20, lld
+- LLVM libc++ stack 20.1.x built from source into `/usr` (both static libraries available)
+- Defaults set in `/etc/clang/clang.cfg`: `-stdlib=libc++`, `-unwindlib=libunwind`, `-rtlib=compiler-rt`, `-fuse-ld=lld`
 
-## Build
-```pwsh
-# From this directory
-docker build -t musl-clang:20 .
-```
+### Build
+- Build the image from the repo root and tag it `musl-clang:alpine`.
 
-## Run (verification happens automatically)
-```pwsh
-docker run --rm musl-clang:20
-```
-You should see:
-```
-Verification OK: Hello from musl+clang with C++20
-```
+### Run (auto-verification)
+- Running the container compiles and executes the verification program and ensures the resulting binary is statically linked.
+- Expected output: `Verification OK: Hello from musl+clang with C++20`.
 
-## Notes
-- The entrypoint additionally verifies the produced binary is statically linked (using `ldd`).
-- The image builds static libraries to enable fully static linking of the test.
-- `TARGET_TRIPLE` defaults to `x86_64-unknown-linux-musl`.
-- Musl sysroot: `/opt/musl`
-- You can mount your project and compile with flags similar to the entrypoint:
-  - `--target=$TARGET_TRIPLE --sysroot=/opt/musl -static -stdlib=libc++ -lc++abi -lunwind -rtlib=compiler-rt -I/opt/musl/include/c++/v1 -L/opt/musl/lib`
-
-### Switching versions (optional)
-- To try a different LLVM version, edit the Dockerfile `ARG LLVM_VERSION` and `ARG LLVM_RUNTIMES_VERSION` accordingly and adjust the linker path in `entrypoint.sh` (e.g., `ld.lld-19`). Tag your image appropriately (e.g., `musl-clang:19`).
+### Notes
+- Static-link check accepts musl ldd messages like "statically linked", "not a dynamic executable", or "Not a valid dynamic program".
+- To change LLVM runtimes version, adjust `ARG LLVM_RUNTIMES_VERSION` in `Dockerfile`.
