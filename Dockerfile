@@ -1,73 +1,81 @@
-## Alpine base with Clang + musl + libc++ as system defaults
-FROM alpine:3.22.1
+## Ubuntu 16.04 base with LLVM 20, CMake 3.31, and libc++ runtimes
+FROM ubuntu:16.04
 
-ARG LLVM_RUNTIMES_VERSION=20.1.0
+ARG LLVM_VERSION=20.1.0
+ARG CMAKE_VERSION=3.31.0
 ENV TZ=Etc/UTC \
-  TARGET_TRIPLE=x86_64-alpine-linux-musl \
-  CC=clang \
-  CXX=clang++ \
-  LLVM_RUNTIMES_VERSION=${LLVM_RUNTIMES_VERSION}
+    DEBIAN_FRONTEND=noninteractive \
+    PATH=/usr/local/cmake-${CMAKE_VERSION}-linux-x86_64/bin:/usr/local/llvm-20/bin:$PATH
 
-# Install base build tools, clang/lld, and headers
+# Point apt to old-releases, install prerequisites, newer GCC for building LLVM, and Ninja
 RUN set -eux; \
-  apk add --no-cache \
-  bash coreutils ca-certificates tzdata \
-  build-base cmake ninja \
-  clang lld llvm-dev llvm20-static \
-  compiler-rt \
-  linux-headers \
-  curl git xz tar python3;
+  sed -i -e 's|archive.ubuntu.com|old-releases.ubuntu.com|g' -e 's|security.ubuntu.com|old-releases.ubuntu.com|g' /etc/apt/sources.list; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends \
+    ca-certificates tzdata curl wget git xz-utils \
+    software-properties-common gnupg2 \
+    build-essential python3 pkg-config \
+    ninja-build zlib1g-dev libxml2-dev libedit-dev libffi-dev libbsd-dev libncurses5-dev linux-libc-dev; \
+  add-apt-repository -y ppa:ubuntu-toolchain-r/test; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends gcc-10 g++-10; \
+  update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100 \
+                      --install /usr/bin/g++ g++ /usr/bin/g++-10 100; \
+  rm -rf /var/lib/apt/lists/*
 
-## Build libc++ stack (libunwind, libc++abi, libc++) and install into /usr (system default)
+# Install CMake 3.31
+RUN set -eux; \
+  cd /usr/local; \
+  curl -fsSL -o cmake.tar.gz https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz; \
+  tar -xzf cmake.tar.gz; \
+  rm -f cmake.tar.gz; \
+  cmake --version
+
+# Build and install LLVM/Clang/LLD ${LLVM_VERSION}
 WORKDIR /tmp
 RUN set -eux; \
-  RVER=${LLVM_RUNTIMES_VERSION}; \
-  curl -fsSL -o llvm-project.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-${RVER}/llvm-project-${RVER}.src.tar.xz; \
+  curl -fsSL -o llvm-project.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/llvm-project-${LLVM_VERSION}.src.tar.xz; \
   tar -xf llvm-project.tar.xz; \
-  cmake -S llvm-project-${RVER}.src/runtimes -B /tmp/llvm-musl-build -G Ninja \
-  -DLLVM_ENABLE_RUNTIMES="libunwind;libcxxabi;libcxx" \
-  -DLLVM_TARGETS_TO_BUILD="X86" \
-  -DCMAKE_INSTALL_PREFIX=/usr \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-  -DCMAKE_C_COMPILER=${CC} \
-  -DCMAKE_CXX_COMPILER=${CXX} \
-  -DLLVM_USE_LINKER=lld \
-  -DLLVM_INCLUDE_TESTS=OFF \
-  -DLLVM_INCLUDE_EXAMPLES=OFF \
-  -DLLVM_INCLUDE_DOCS=OFF \
-  -DLIBUNWIND_ENABLE_SHARED=OFF \
-  -DLIBUNWIND_ENABLE_STATIC=ON \
-  -DLIBUNWIND_ENABLE_TESTS=OFF \
-  -DLIBUNWIND_ENABLE_EXAMPLES=OFF \
-  -DLIBUNWIND_ENABLE_DOCS=OFF \
-  -DLIBCXXABI_ENABLE_SHARED=OFF \
-  -DLIBCXXABI_ENABLE_STATIC=ON \
-  -DLIBCXXABI_USE_COMPILER_RT=ON \
-  -DLIBCXXABI_ENABLE_TESTS=OFF \
-  -DLIBCXXABI_ENABLE_DOCS=OFF \
-  -DLIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF \
-  -DLIBCXX_ENABLE_SHARED=OFF \
-  -DLIBCXX_ENABLE_STATIC=ON \
-  -DLIBCXX_ENABLE_EXPERIMENTAL_LIBRARY=OFF \
-  -DLIBCXX_ENABLE_FILESYSTEM=ON \
-  -DLIBCXX_ENABLE_ABI_LINKER_SCRIPT=OFF \
-  -DLIBCXX_USE_COMPILER_RT=ON \
-  -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
-  -DLIBCXX_HAS_MUSL_LIBC=ON \
-  -DLIBCXX_INCLUDE_BENCHMARKS=OFF; \
-  cmake --build /tmp/llvm-musl-build --target install -j"$(nproc)"; \
-  rm -rf /tmp/llvm-project* /tmp/llvm-musl-build
+  cmake -S llvm-project-${LLVM_VERSION}.src/llvm -B /tmp/llvm-build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=gcc \
+    -DCMAKE_CXX_COMPILER=g++ \
+    -DLLVM_ENABLE_PROJECTS="clang;lld" \
+    -DLLVM_ENABLE_TERMINFO=OFF \
+    -DCMAKE_INSTALL_PREFIX=/usr/local/llvm-20; \
+  cmake --build /tmp/llvm-build -j"$(nproc)"; \
+  cmake --build /tmp/llvm-build --target install; \
+  rm -rf /tmp/llvm-build
 
-# Add verification source and entrypoint
+# Build and install libc++ stack (compiler-rt, libunwind, libc++abi, libc++)
+RUN set -eux; \
+  cmake -S llvm-project-${LLVM_VERSION}.src/runtimes -B /tmp/llvm-rt-build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER=/usr/local/llvm-20/bin/clang \
+    -DCMAKE_CXX_COMPILER=/usr/local/llvm-20/bin/clang++ \
+    -DLLVM_ENABLE_RUNTIMES="compiler-rt;libunwind;libcxxabi;libcxx" \
+    -DLIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL=OFF \
+    -DLIBCXX_USE_COMPILER_RT=ON \
+    -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
+    -DLIBUNWIND_ENABLE_SHARED=ON -DLIBUNWIND_ENABLE_STATIC=ON \
+    -DLIBCXXABI_ENABLE_SHARED=ON -DLIBCXXABI_ENABLE_STATIC=ON \
+    -DLIBCXX_ENABLE_SHARED=ON -DLIBCXX_ENABLE_STATIC=ON \
+    -DCMAKE_INSTALL_PREFIX=/usr/local/llvm-20; \
+  cmake --build /tmp/llvm-rt-build -j"$(nproc)"; \
+  cmake --build /tmp/llvm-rt-build --target install; \
+  rm -rf /tmp/llvm-rt-build /tmp/llvm-project*
+
+# Configure clang defaults to prefer libc++ and lld and point to installed headers/libs
+RUN set -eux; \
+  mkdir -p /etc/clang; \
+  printf "-stdlib=libc++\n-unwindlib=libunwind\n-rtlib=compiler-rt\n-fuse-ld=lld\n-isystem /usr/local/llvm-20/include/c++/v1\n-L/usr/local/llvm-20/lib\n" > /etc/clang/clang.cfg; \
+  echo "/usr/local/llvm-20/lib" > /etc/ld.so.conf.d/llvm20.conf; \
+  ldconfig
+
+# Add verification source and entrypoint (optional smoke test)
 WORKDIR /opt/src
 COPY verify.cpp /opt/src/verify.cpp
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
-
-# Make libc++ the default C++ standard library for clang via system config
-RUN set -eux; \
-  mkdir -p /etc/clang; \
-  printf "-stdlib=libc++\n-unwindlib=libunwind\n-rtlib=compiler-rt\n-fuse-ld=lld\n" > /etc/clang/clang.cfg
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
