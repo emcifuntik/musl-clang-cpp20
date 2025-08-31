@@ -11,7 +11,7 @@ ${CXX} -std=c++20 /opt/src/verify.cpp -o /opt/src/verify \
 
 # Run once and capture output
 OUT=$(/opt/src/verify)
-if [[ "$OUT" != "Hello from musl+clang with C++20" ]]; then
+if [[ "$OUT" != "Hello from musl+clang with C++20 (atomic count: 1)" ]]; then
   echo "Unexpected output: $OUT" >&2
   exit 1
 fi
